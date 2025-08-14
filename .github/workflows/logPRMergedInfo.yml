@@ -1,0 +1,43 @@
+name: Log PR Merged Info
+
+on:
+  pull_request:
+    types: [closed]
+
+jobs:
+  log-commit-info:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Check merged branch in branchtrack.txt
+        run: |
+          BRANCH="${{ github.event.pull_request.base.ref }}"
+          if grep -Fxq "$BRANCH" branchtrack.txt; then
+            echo "Branch tracked: $BRANCH"
+          else
+            echo "Branch not tracked, skipping."
+            exit 0
+          fi
+
+      - name: Check PR author in team_users.txt
+        run: |
+          AUTHOR="${{ github.event.pull_request.user.login }}"
+          if grep -Fxq "$AUTHOR" team_users.txt; then
+            echo "Author in team: $AUTHOR"
+          else
+            echo "Author not in team, skipping."
+            exit 0
+          fi
+
+      - name: Log commit info to CSV
+        run: |
+          PR_DATE=$(date -d "${{ github.event.pull_request.created_at }}" +%Y-%m-%d)
+          MERGED_DATE=$(date -d "${{ github.event.pull_request.merged_at }}" +%Y-%m-%d)
+          COMMIT_ID="${{ github.event.pull_request.merge_commit_sha }}"
+          COMMIT_MSG="${{ github.event.pull_request.title }}"
+          BRANCH="${{ github.event.pull_request.base.ref }}"
+          NO=$(($(wc -l < commit-log.csv)+1))
+          echo "$NO,$MERGED_DATE,\"$COMMIT_MSG\",$COMMIT_ID,$BRANCH,$PR_DATE" >> commit-log.csv
