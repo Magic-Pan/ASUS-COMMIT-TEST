@@ -20,31 +20,27 @@ jobs:
       BUG_CLASSIFIER_TOP_K: 3
     steps:
       - name: Check bug_classifier health
-        shell: bash
+        shell: pwsh
         run: |
-          health_url="${BUG_CLASSIFIER_URL}/health"
-          
-          response=$(curl -s -w "\n%{http_code}" "$health_url" --max-time 15)
-          http_code=$(echo "$response" | tail -n1)
-          body=$(echo "$response" | sed '$d')
-          
-          if [ "$http_code" != "200" ]; then
-            echo "bug_classifier health check failed: HTTP $http_code"
-            echo "$body"
+          $healthUrl = "${env:BUG_CLASSIFIER_URL}/health"
+          try {
+            $response = Invoke-RestMethod -Uri $healthUrl -Method Get -TimeoutSec 15
+          }
+          catch {
+            Write-Error "bug_classifier health check failed: $($_.Exception.Message)"
             exit 1
-          fi
-          
-          status=$(echo "$body" | jq -r '.status // empty')
-          if [ "$status" != "ok" ]; then
-            echo "bug_classifier health check returned unexpected response"
-            echo "$body"
+          }
+
+          if (-not $response -or $response.status -ne "ok") {
+            Write-Error "bug_classifier health check returned unexpected response"
+            $response | ConvertTo-Json -Depth 5
             exit 1
-          fi
-          
-          echo "bug_classifier health check passed: $status"
+          }
+
+          Write-Host "bug_classifier health check passed: $($response.status)"
 
       - name: Send issue to bug_classifier
-        shell: bash
+        shell: pwsh
         env:
           ISSUE_TITLE: ${{ github.event.issue.title }}
           ISSUE_BODY: ${{ github.event.issue.body }}
@@ -54,44 +50,32 @@ jobs:
           REPOSITORY: ${{ github.repository }}
           ISSUE_LABELS_JSON: ${{ toJson(github.event.issue.labels.*.name) }}
         run: |
-          python - <<'PY'
-          import json
-          import os
-          import sys
-          import urllib.error
-          import urllib.request
+          $body = @{
+              repository = $env:REPOSITORY
+              issue_number = [int]$env:ISSUE_NUMBER
+              issue_id = $env:ISSUE_ID
+              issue_url = $env:ISSUE_URL
+              title = $env:ISSUE_TITLE
+              body = $env:ISSUE_BODY
+              labels = @($env:ISSUE_LABELS_JSON | ConvertFrom-Json)
+              top_k = [int]$env:BUG_CLASSIFIER_TOP_K
+          } | ConvertTo-Json -Depth 10
 
-          base_url = os.environ["BUG_CLASSIFIER_URL"].rstrip("/")
-          endpoint = f"{base_url}/integration/github/issues/classify"
-          payload = {
-              "repository": os.environ.get("REPOSITORY", ""),
-              "issue_number": int(os.environ.get("ISSUE_NUMBER", "0") or 0),
-              "issue_id": os.environ.get("ISSUE_ID", ""),
-              "issue_url": os.environ.get("ISSUE_URL", ""),
-              "title": os.environ.get("ISSUE_TITLE", ""),
-              "body": os.environ.get("ISSUE_BODY", ""),
-              "labels": json.loads(os.environ.get("ISSUE_LABELS_JSON", "[]") or "[]"),
-              "top_k": int(os.environ.get("BUG_CLASSIFIER_TOP_K", "3") or 3),
+          try {
+              $response = Invoke-RestMethod -Uri "$env:BUG_CLASSIFIER_URL/integration/github/issues/classify" `
+                  -Method Post `
+                  -Body $body `
+                  -ContentType "application/json; charset=utf-8" `
+                  -TimeoutSec 30
+              
+              Write-Host ($response | ConvertTo-Json -Depth 10)
           }
-
-          request = urllib.request.Request(
-              endpoint,
-              data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-              headers={"Content-Type": "application/json; charset=utf-8"},
-              method="POST",
-          )
-
-          try:
-              with urllib.request.urlopen(request, timeout=30) as response:
-                  body = response.read().decode("utf-8", errors="replace")
-          except urllib.error.HTTPError as error:
-              error_body = error.read().decode("utf-8", errors="replace")
-              print(f"bug_classifier request failed: HTTP {error.code}", file=sys.stderr)
-              print(error_body, file=sys.stderr)
-              raise
-          except urllib.error.URLError as error:
-              print(f"bug_classifier request failed: {error}", file=sys.stderr)
-              raise
-
-          print(body)
-          PY
+          catch {
+              Write-Error "bug_classifier request failed: $($_.Exception.Message)"
+              if ($_.Exception.Response) {
+                  $reader = New-Object System.IO.StreamReader($_.Exception.Response.GetResponseStream())
+                  $errorBody = $reader.ReadToEnd()
+                  Write-Error "Response body: $errorBody"
+              }
+              exit 1
+          }
