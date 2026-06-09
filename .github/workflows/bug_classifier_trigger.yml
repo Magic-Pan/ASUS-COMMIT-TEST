@@ -20,27 +20,31 @@ jobs:
       BUG_CLASSIFIER_TOP_K: 3
     steps:
       - name: Check bug_classifier health
-        shell: pwsh
+        shell: bash
         run: |
-          $healthUrl = "${env:BUG_CLASSIFIER_URL}/health"
-          try {
-            $response = Invoke-RestMethod -Uri $healthUrl -Method Get -TimeoutSec 15
-          }
-          catch {
-            Write-Error "bug_classifier health check failed: $($_.Exception.Message)"
+          health_url="${BUG_CLASSIFIER_URL}/health"
+          
+          response=$(curl -s -w "\n%{http_code}" "$health_url" --max-time 15)
+          http_code=$(echo "$response" | tail -n1)
+          body=$(echo "$response" | sed '$d')
+          
+          if [ "$http_code" != "200" ]; then
+            echo "bug_classifier health check failed: HTTP $http_code"
+            echo "$body"
             exit 1
-          }
-
-          if (-not $response -or $response.status -ne "ok") {
-            Write-Error "bug_classifier health check returned unexpected response"
-            $response | ConvertTo-Json -Depth 5
+          fi
+          
+          status=$(echo "$body" | jq -r '.status // empty')
+          if [ "$status" != "ok" ]; then
+            echo "bug_classifier health check returned unexpected response"
+            echo "$body"
             exit 1
-          }
-
-          Write-Host "bug_classifier health check passed: $($response.status)"
+          fi
+          
+          echo "bug_classifier health check passed: $status"
 
       - name: Send issue to bug_classifier
-        shell: pwsh
+        shell: bash
         env:
           ISSUE_TITLE: ${{ github.event.issue.title }}
           ISSUE_BODY: ${{ github.event.issue.body }}
