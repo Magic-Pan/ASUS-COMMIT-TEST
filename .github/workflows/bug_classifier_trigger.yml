@@ -4,8 +4,8 @@ on:
   issues:
     types:
       - opened
-      - edited
-      - reopened
+     # - edited
+     # - reopened
 
 permissions:
   contents: read
